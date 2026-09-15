@@ -21,7 +21,7 @@ nvm alias default 22
 node -v    # → v22.xx.x
 npm -v     # → 10.xx.x
 ```
-**1. CLone git**
+**2. CLone git**
 ```
 git clone https://github.com/Apollo-Sync/rhmigration.git
 ```
