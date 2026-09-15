@@ -1,0 +1,13 @@
+{
+  "name": "hood-radar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node radar.mjs",
+    "scan:devsold": "node scanDevSold.mjs"
+  },
+  "dependencies": {
+    "ethers": "^6.13.5"
+  }
+}
