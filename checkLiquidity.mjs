@@ -46,9 +46,14 @@
 import fs from 'fs';
 import readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
-import { sendTelegramMessage, verifyTelegramConnection, telegramEnabled, escapeHtml } from './src/telegram.mjs';
+import { createTelegramNotifier, escapeHtml } from './src/telegram.mjs';
 import { initRpc } from './src/rpcClient.mjs';
 import { getDevAddress, getTotalSupply, getBalanceOf } from './src/onchainStats.mjs';
+
+// Bot Telegram RIÊNG cho checkLiquidity.mjs (khác bot của radar.mjs), đọc
+// cấu hình từ telegram-checkliquidity.txt (2 dòng: bot token / chat id,
+// đặt ở gốc project, ngang hàng telegram.txt).
+const telegram = createTelegramNotifier('telegram-checkliquidity.txt');
 
 function parseArgs() {
   const args = {};
@@ -390,9 +395,9 @@ async function runScanOnce(MIN_LIQ_USD, CONCURRENCY) {
 
     // Báo Telegram cho token vừa phát hiện có thanh khoản trở lại (chỉ báo
     // 1 lần/token trong suốt phiên chạy, xem notifiedTokens ở trên).
-    if (telegramEnabled && !notifiedTokens.has(r.token)) {
+    if (telegram.telegramEnabled && !notifiedTokens.has(r.token)) {
       notifiedTokens.add(r.token);
-      sendTelegramMessage(buildLiqTelegramMessage(r)).catch(() => {});
+      telegram.sendTelegramMessage(buildLiqTelegramMessage(r)).catch(() => {});
     }
   }
 
@@ -408,7 +413,7 @@ async function main() {
     console.log('[!] Không kết nối được RPC nào (kiểm tra file rpc.txt) - cột "Dev hold" sẽ hiển thị n/a, phần liquidity vẫn chạy bình thường.\n');
   }
 
-  await verifyTelegramConnection();
+  await telegram.verifyTelegramConnection();
 
   if (!repeat) {
     console.log('\n[*] Chế độ: quét 1 lần rồi dừng.\n');

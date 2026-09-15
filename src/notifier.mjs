@@ -7,7 +7,14 @@ import { getLaunchSocials } from './launchMeta.mjs';
 import { latestBlock } from './rpcClient.mjs';
 import { now, fmtPct, decodeTokenLaunched, quoteSymbol, xTickerSearch, xCaSearch } from './format.mjs';
 import { setSection, printPermanent } from './screen.mjs';
-import { sendTelegramMessage, buildTelegramAlert, telegramEnabled } from './telegram.mjs';
+import { createTelegramNotifier } from './telegram.mjs';
+
+// Bot Telegram của radar.mjs - đọc cấu hình từ telegram.txt (đặt ở gốc
+// project). checkLiquidity.mjs dùng 1 bot khác, đọc từ
+// telegram-checkliquidity.txt (xem src/telegram.mjs). Export ra để
+// radar.mjs dùng chung 1 instance duy nhất (verifyTelegramConnection lúc
+// khởi động, hiển thị trạng thái BẬT/TẮT).
+export const telegram = createTelegramNotifier('telegram.txt');
 
 // Ghi lại địa chỉ contract (CA) của token bị bỏ qua (rug/hết giao dịch, dev
 // chưa xả kịp...) vào ca-rug.txt, và token đạt đủ mọi điều kiện (đã báo)
@@ -388,11 +395,11 @@ export async function onNewToken(log) {
   // Bắn kèm thông báo Telegram (song song với việc in log ở trên). Không
   // await/chặn luồng chính - lỗi mạng/API Telegram chỉ log ra console, tự
   // catch bên trong sendTelegramMessage(), không làm crash radar.
-  if (telegramEnabled) {
-    const text = buildTelegramAlert({
+  if (telegram.telegramEnabled) {
+    const text = telegram.buildTelegramAlert({
       token, log, launch, meta, info, stats, devDumpPct,
       settings, fmtPct, quoteSymbol, STOCK_QUOTES, now,
     });
-    sendTelegramMessage(text).catch(() => {});
+    telegram.sendTelegramMessage(text).catch(() => {});
   }
 }

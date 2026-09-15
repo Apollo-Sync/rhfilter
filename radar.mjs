@@ -1,9 +1,8 @@
 import { latestBlock, initRpc } from './src/rpcClient.mjs';
 import { getLogs } from './src/logs.mjs';
-import { onNewToken } from './src/notifier.mjs';
+import { onNewToken, telegram } from './src/notifier.mjs';
 import { LOOKBACK_BLOCKS, POLL_SEC, settings, promptSettings } from './src/config.mjs';
 import { printPermanent } from './src/screen.mjs';
-import { telegramEnabled, verifyTelegramConnection } from './src/telegram.mjs';
 
 let fromBlock = null;
 
@@ -49,7 +48,7 @@ async function main() {
     process.exit(1);
   }
 
-  await verifyTelegramConnection();
+  await telegram.verifyTelegramConnection();
 
   const filterMsg = settings.minAliveSec > 0
     ? `chỉ báo token sống ≥ ${settings.minAliveSec}s`
@@ -60,7 +59,7 @@ async function main() {
   const devDumpMsg = settings.requireDevDumped
     ? `chờ dev xả < ${settings.devDumpThresholdPct}% (tối đa ${Math.round(settings.devDumpMaxWaitSec / 60)}p)`
     : `không yêu cầu dev xả hàng`;
-  const telegramMsg = telegramEnabled ? `Telegram: BẬT ✅` : `Telegram: TẮT (chưa có telegram.txt hợp lệ)`;
+  const telegramMsg = telegram.telegramEnabled ? `Telegram: BẬT ✅` : `Telegram: TẮT (chưa có telegram.txt hợp lệ)`;
   console.log(`[+] Khởi động Radar thành công (${filterMsg}, ${twitterMsg}, ${devDumpMsg}, ${telegramMsg}). Đang quét token mới (không đợi migrate)...\n`);
   tick();
 }
