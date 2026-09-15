@@ -23,5 +23,5 @@ npm -v     # → 10.xx.x
 ```
 **2. CLone git**
 ```
-git clone https://github.com/Apollo-Sync/rhmigration.git
+git clone https://github.com/Apollo-Sync/rhfilter.git
 ```
