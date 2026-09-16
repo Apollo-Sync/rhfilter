@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node radar.mjs",
-    "scan:devsold": "node scanDevSold.mjs"
+    "scan:devsold": "node scanDevSold.mjs",
+    "check:liq": "node checkLiquidity.mjs"
   },
   "dependencies": {
     "ethers": "^6.13.5"

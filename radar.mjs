@@ -1,7 +1,7 @@
 import { latestBlock, initRpc } from './src/rpcClient.mjs';
 import { getLogs } from './src/logs.mjs';
 import { onNewToken, telegram } from './src/notifier.mjs';
-import { LOOKBACK_BLOCKS, POLL_SEC, settings, promptSettings } from './src/config.mjs';
+import { LOOKBACK_BLOCKS, POLL_SEC, settings, promptSettings, RPC_FILE_NAME } from './src/config.mjs';
 import { printPermanent } from './src/screen.mjs';
 
 let fromBlock = null;
@@ -31,7 +31,7 @@ export async function tick() {
     // Nếu là lỗi "tất cả RPC đều lỗi" thì đã được thể hiện qua dòng trạng
     // thái RPC (đỏ/xanh) ở rpcClient.mjs rồi — không in thêm dòng trùng lặp
     // ở đây nữa. Các lỗi khác (không liên quan RPC) vẫn log bình thường.
-    if (!String(e.message).startsWith("Tất cả RPC trong rpc.txt đều lỗi")) {
+    if (!String(e.message).startsWith(`Tất cả RPC trong ${RPC_FILE_NAME} đều lỗi`)) {
       printPermanent(`[!] Lỗi trong vòng lặp tick: ${e.message}`);
     }
   }
@@ -44,7 +44,7 @@ async function main() {
 
   const ok = await initRpc();
   if (!ok) {
-    console.log("[-] Không tìm thấy RPC nào khả dụng. Vui lòng kiểm tra lại file rpc.txt!");
+    console.log(`[-] Không tìm thấy RPC nào khả dụng. Vui lòng kiểm tra lại file ${RPC_FILE_NAME}!`);
     process.exit(1);
   }
 

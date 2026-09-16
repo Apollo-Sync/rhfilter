@@ -1,4 +1,4 @@
-import { RPC_LIST } from './config.mjs';
+import { RPC_LIST, RPC_FILE_NAME } from './config.mjs';
 import { setSection, printPermanent } from './screen.mjs';
 
 let currentRpcIndex = 0;
@@ -196,7 +196,7 @@ export async function rpc(method, params = []) {
       tries++;
       rotateRpc();
       if (tries >= maxTries) {
-        throw new Error(`Tất cả RPC trong rpc.txt đều lỗi: ${lastError.message}`);
+        throw new Error(`Tất cả RPC trong ${RPC_FILE_NAME} đều lỗi: ${lastError.message}`);
       }
     }
   }
