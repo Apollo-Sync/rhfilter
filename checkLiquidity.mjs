@@ -130,12 +130,20 @@ function saveZeroStreak(map) {
   }
 }
 
-// Ghi lại INPUT_FILE, bỏ đi các token trong removeSet — giữ nguyên định dạng
-// CSV "token,curve,pairToken" (hoặc chỉ "token") cho các dòng còn lại, dựa
-// trên caList đã parse (loadCaList). Lưu ý: các dòng comment "#..." nếu có
-// trong file gốc sẽ bị mất sau khi ghi lại (loadCaList vốn đã bỏ qua chúng).
-function removeFromCaFile(filePath, caList, removeSet) {
-  const kept = caList.filter((c) => !removeSet.has(c.token));
+// Ghi lại INPUT_FILE, bỏ đi các token trong removeSet.
+//
+// QUAN TRỌNG: KHÔNG dùng lại caList đã load từ lúc BẮT ĐẦU quét (caList đó có
+// thể đã cũ vài giây tới vài phút, tuỳ quét bao nhiêu token) — vì trong lúc
+// checkLiquidity.mjs đang quét, notifier.mjs (chạy song song trong
+// radar.mjs) có thể đã append thêm token MỚI vào chính file này. Nếu ghi đè
+// dựa trên snapshot cũ, các token mới đó sẽ bị xoá mất theo kiểu "vô tình"
+// dù chúng chẳng liên quan gì tới token bị xoá do hết thanh khoản.
+// => Đọc lại file NGAY TRƯỚC khi ghi (đọc-sửa-ghi sát nhau nhất có thể) để
+// gồm luôn những dòng mới vừa được radar.mjs thêm vào, chỉ lọc bỏ đúng những
+// token nằm trong removeSet.
+function removeFromCaFile(filePath, removeSet) {
+  const freshList = loadCaList(filePath);
+  const kept = freshList.filter((c) => !removeSet.has(c.token));
   const lines = kept.map((c) => (c.curve ? `${c.token},${c.curve},${c.pairToken || ''}` : c.token));
   try {
     fs.writeFileSync(filePath, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
@@ -522,7 +530,7 @@ async function runScanOnce(MIN_LIQ_USD, CONCURRENCY) {
   saveZeroStreak(zeroStreak);
 
   if (toRemove.size > 0) {
-    removeFromCaFile(INPUT_FILE, caList, toRemove);
+    removeFromCaFile(INPUT_FILE, toRemove);
     console.log(`[*] Đã xoá ${toRemove.size} CA khỏi ${INPUT_FILE} (liquidity = 0 sau ${MAX_ZERO_STREAK} lần quét liên tiếp).`);
   }
 }
