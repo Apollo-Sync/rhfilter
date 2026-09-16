@@ -49,8 +49,8 @@
 //   --mode <1|2>           1 = quét 1 lần, 2 = quét lặp mỗi N phút (mặc định hỏi trên terminal, Enter = 1)
 //   --interval <phút>      Chỉ dùng khi mode=2 — số phút giữa các lần quét (mặc định hỏi trên terminal, Enter = 10)
 //   --max-zero-streak <n>  Sau n lần quét LIÊN TIẾP token vẫn ra liquidity = 0 (hoặc không xác định
-//                          được) thì xoá hẳn CA đó khỏi INPUT_FILE (mặc định 3). Đếm lưu ở file
-//                          "<INPUT_FILE>.streak.json", không mất khi tắt/mở lại script.
+//                          được) thì xoá hẳn CA đó khỏi INPUT_FILE (mặc định hỏi trên terminal, Enter = 3).
+//                          Đếm lưu ở file "<INPUT_FILE>.streak.json", không mất khi tắt/mở lại script.
 //   --tries <n>            Số lần thử lại nếu không thấy liquidity (mặc định 1 = không thử lại, nhanh nhất)
 //   --retry-delay <ms>     Thời gian chờ giữa các lần thử lại nếu --tries > 1 (mặc định 500ms)
 //   --timeout <ms>         Timeout mỗi request API (mặc định 6000ms) — request treo sẽ bị hủy sau thời gian này
@@ -102,14 +102,13 @@ const TRIES = Math.max(1, parseInt(args.tries, 10) || 1);
 const RETRY_DELAY_MS = num(args['retry-delay'], 500);
 const TIMEOUT_MS = num(args.timeout, 6000);
 
-// Sau MAX_ZERO_STREAK lần quét LIÊN TIẾP mà 1 token vẫn ra liquidity = 0 (hoặc
-// không xác định được), xoá hẳn CA đó khỏi INPUT_FILE để các vòng quét sau
+// Sau bao nhiêu lần quét LIÊN TIẾP mà 1 token vẫn ra liquidity = 0 (hoặc
+// không xác định được) thì xoá hẳn CA đó khỏi INPUT_FILE để các vòng quét sau
 // không phải quét lại nữa (đỡ tốn RPC/API cho token gần như chắc chắn đã
 // chết hẳn). Đếm số lần liên tiếp được lưu ra file riêng (STREAK_FILE) nên
 // vẫn đúng dù chạy --mode 1 nhiều lần tách rời (không chỉ trong 1 phiên
-// --mode 2), và không bị mất khi tắt/mở lại script.
-// Đổi ngưỡng qua: --max-zero-streak <số lần>
-const MAX_ZERO_STREAK = Math.max(1, parseInt(args['max-zero-streak'], 10) || 3);
+// --mode 2), và không bị mất khi tắt/mở lại script. Số lần nhập tay trên
+// terminal (xem promptForSettings) hoặc qua CLI: --max-zero-streak <số lần>.
 const STREAK_FILE = `${INPUT_FILE}.streak.json`;
 
 function loadZeroStreak() {
@@ -329,6 +328,14 @@ async function promptForSettings() {
     }
   }
 
+  let maxZeroStreakRaw = args['max-zero-streak'];
+  if (maxZeroStreakRaw === undefined) {
+    maxZeroStreakRaw = await ask(
+      `Xoá CA khỏi ${INPUT_FILE} sau bao nhiêu lần quét LIÊN TIẾP không có thanh khoản`,
+      3
+    );
+  }
+
   rl.close();
 
   return {
@@ -336,6 +343,7 @@ async function promptForSettings() {
     concurrency: Math.max(1, parseInt(concurrencyRaw, 10) || 10),
     repeat,
     intervalMin: Math.max(1, num(intervalRaw, 10)),
+    maxZeroStreak: Math.max(1, parseInt(maxZeroStreakRaw, 10) || 3),
   };
 }
 
@@ -412,7 +420,7 @@ function buildLiqTelegramMessage(r) {
 // Quét 1 lần: LUÔN đọc lại file CA mới nhất (loadCaList đọc file mỗi lần
 // gọi), nên nếu radar.mjs vừa ghi thêm CA mới vào ca-rug.txt thì lần quét
 // tiếp theo sẽ tự động thấy ngay.
-async function runScanOnce(MIN_LIQ_USD, CONCURRENCY) {
+async function runScanOnce(MIN_LIQ_USD, CONCURRENCY, MAX_ZERO_STREAK) {
   const caList = loadCaList(INPUT_FILE);
   if (caList.length === 0) {
     console.log(`[!] Không tìm thấy CA hợp lệ nào trong ${INPUT_FILE}.`);
@@ -536,7 +544,7 @@ async function runScanOnce(MIN_LIQ_USD, CONCURRENCY) {
 }
 
 async function main() {
-  const { minLiq: MIN_LIQ_USD, concurrency: CONCURRENCY, repeat, intervalMin } = await promptForSettings();
+  const { minLiq: MIN_LIQ_USD, concurrency: CONCURRENCY, repeat, intervalMin, maxZeroStreak: MAX_ZERO_STREAK } = await promptForSettings();
   const INTERVAL_MS = intervalMin * 60 * 1000;
 
   const rpcOk = await initRpc();
@@ -548,7 +556,7 @@ async function main() {
 
   if (!repeat) {
     console.log('\n[*] Chế độ: quét 1 lần rồi dừng.\n');
-    await runScanOnce(MIN_LIQ_USD, CONCURRENCY);
+    await runScanOnce(MIN_LIQ_USD, CONCURRENCY, MAX_ZERO_STREAK);
     return;
   }
 
@@ -558,7 +566,7 @@ async function main() {
     const startedAt = new Date().toLocaleString('vi-VN');
     console.log(`\n${'='.repeat(60)}\n[${startedAt}] Bắt đầu vòng quét mới\n${'='.repeat(60)}`);
     try {
-      await runScanOnce(MIN_LIQ_USD, CONCURRENCY);
+      await runScanOnce(MIN_LIQ_USD, CONCURRENCY, MAX_ZERO_STREAK);
     } catch (e) {
       console.error(`[-] Lỗi trong vòng quét: ${e.message}`);
     }
