@@ -11,11 +11,22 @@
 // --tries/--concurrency riêng cho việc quét số lượng lớn CA. Có lấy kèm
 // social link (X/Telegram/Website) khi tìm thấy token.
 //
-// LƯU Ý: dùng nguồn API ngoài (GeckoTerminal/DexScreener), KHÔNG đọc trực
-// tiếp ví curve on-chain vì ca-rug.txt chỉ lưu địa chỉ token (không có địa
-// chỉ curve đi kèm). Token đã graduate/có pool DEX -> chính xác, gần
-// real-time. Token vẫn còn trên bonding curve mà 2 API trên chưa index kịp
-// -> có thể ra "n/a" dù GMGN vẫn còn thanh khoản.
+// ĐỌC ON-CHAIN TRƯỚC (real-time, không cache) khi có thể: notifier.mjs giờ
+// ghi kèm curve+pairToken vào ca-rug.txt (dạng "token,curve,pairToken" thay
+// vì chỉ "token"), nên với các dòng mới, script đọc thẳng số dư ví Curve qua
+// RPC (xem src/curveLiquidity.mjs) — chính xác 100% tại thời điểm chạy, bỏ
+// qua hẳn API ngoài cho các dòng này. Chỉ fallback về GeckoTerminal/
+// DexScreener khi: dòng cũ không có curve (file ghi từ trước khi sửa), hoặc
+// getCurveLiqUsd trả về null (quote asset là cổ phiếu tokenized chưa quy đổi
+// được USD ở đây).
+//
+// LÝ DO CẦN FIX NÀY: GeckoTerminal/DexScreener index có độ trễ cache, có thể
+// vẫn trả về số liệu liquidity TỪ TRƯỚC lúc rug trong nhiều phút, dù thực tế
+// GMGN đã tụt về gần $0. Trước đây (chỉ dùng API ngoài) đã gây ra đúng bug
+// này: 1 loạt token báo "còn ~$4k" trong khi GMGN chỉ còn $0.00x. Token vẫn
+// còn trên bonding curve mà API ngoài chưa index kịp -> vẫn có thể ra "n/a"
+// (không đổi so với trước), nhưng giờ với dòng có curve thì không còn phụ
+// thuộc API ngoài cho trường hợp đó nữa.
 //
 // Cách chạy:
 //   node checkLiquidity.mjs
@@ -35,7 +46,11 @@
 //   --file <path>         File chứa danh sách CA, mỗi CA 1 dòng (mặc định ca-rug.txt)
 //   --min-liq <n>          Chỉ hiển thị token có liq >= n USD (mặc định hỏi trên terminal, Enter = 0)
 //   --concurrency <n>      Số request chạy song song (mặc định hỏi trên terminal, Enter = 10)
-//   --mode <1|2>           1 = quét 1 lần, 2 = quét lặp mỗi 10 phút (mặc định hỏi trên terminal, Enter = 1)
+//   --mode <1|2>           1 = quét 1 lần, 2 = quét lặp mỗi N phút (mặc định hỏi trên terminal, Enter = 1)
+//   --interval <phút>      Chỉ dùng khi mode=2 — số phút giữa các lần quét (mặc định hỏi trên terminal, Enter = 10)
+//   --max-zero-streak <n>  Sau n lần quét LIÊN TIẾP token vẫn ra liquidity = 0 (hoặc không xác định
+//                          được) thì xoá hẳn CA đó khỏi INPUT_FILE (mặc định 3). Đếm lưu ở file
+//                          "<INPUT_FILE>.streak.json", không mất khi tắt/mở lại script.
 //   --tries <n>            Số lần thử lại nếu không thấy liquidity (mặc định 1 = không thử lại, nhanh nhất)
 //   --retry-delay <ms>     Thời gian chờ giữa các lần thử lại nếu --tries > 1 (mặc định 500ms)
 //   --timeout <ms>         Timeout mỗi request API (mặc định 6000ms) — request treo sẽ bị hủy sau thời gian này
@@ -48,7 +63,9 @@ import readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import { createTelegramNotifier, escapeHtml } from './src/telegram.mjs';
 import { initRpc } from './src/rpcClient.mjs';
+import { RPC_FILE_NAME } from './src/config.mjs';
 import { getDevAddress, getTotalSupply, getBalanceOf } from './src/onchainStats.mjs';
+import { getCurveLiqUsd } from './src/curveLiquidity.mjs';
 
 // Bot Telegram RIÊNG cho checkLiquidity.mjs (khác bot của radar.mjs), đọc
 // cấu hình từ telegram-checkliquidity.txt (2 dòng: bot token / chat id,
@@ -84,6 +101,48 @@ const INPUT_FILE = args.file || 'ca-rug.txt';
 const TRIES = Math.max(1, parseInt(args.tries, 10) || 1);
 const RETRY_DELAY_MS = num(args['retry-delay'], 500);
 const TIMEOUT_MS = num(args.timeout, 6000);
+
+// Sau MAX_ZERO_STREAK lần quét LIÊN TIẾP mà 1 token vẫn ra liquidity = 0 (hoặc
+// không xác định được), xoá hẳn CA đó khỏi INPUT_FILE để các vòng quét sau
+// không phải quét lại nữa (đỡ tốn RPC/API cho token gần như chắc chắn đã
+// chết hẳn). Đếm số lần liên tiếp được lưu ra file riêng (STREAK_FILE) nên
+// vẫn đúng dù chạy --mode 1 nhiều lần tách rời (không chỉ trong 1 phiên
+// --mode 2), và không bị mất khi tắt/mở lại script.
+// Đổi ngưỡng qua: --max-zero-streak <số lần>
+const MAX_ZERO_STREAK = Math.max(1, parseInt(args['max-zero-streak'], 10) || 3);
+const STREAK_FILE = `${INPUT_FILE}.streak.json`;
+
+function loadZeroStreak() {
+  try {
+    const raw = fs.readFileSync(STREAK_FILE, 'utf8');
+    const obj = JSON.parse(raw);
+    return new Map(Object.entries(obj));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveZeroStreak(map) {
+  try {
+    fs.writeFileSync(STREAK_FILE, JSON.stringify(Object.fromEntries(map)), 'utf8');
+  } catch (e) {
+    console.error(`[-] Không ghi được ${STREAK_FILE}: ${e.message}`);
+  }
+}
+
+// Ghi lại INPUT_FILE, bỏ đi các token trong removeSet — giữ nguyên định dạng
+// CSV "token,curve,pairToken" (hoặc chỉ "token") cho các dòng còn lại, dựa
+// trên caList đã parse (loadCaList). Lưu ý: các dòng comment "#..." nếu có
+// trong file gốc sẽ bị mất sau khi ghi lại (loadCaList vốn đã bỏ qua chúng).
+function removeFromCaFile(filePath, caList, removeSet) {
+  const kept = caList.filter((c) => !removeSet.has(c.token));
+  const lines = kept.map((c) => (c.curve ? `${c.token},${c.curve},${c.pairToken || ''}` : c.token));
+  try {
+    fs.writeFileSync(filePath, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
+  } catch (e) {
+    console.error(`[-] Không ghi lại được ${filePath}: ${e.message}`);
+  }
+}
 const USE_VERIFY = Boolean(args.verify);
 
 function timeoutSignal(ms) {
@@ -248,8 +307,18 @@ async function promptForSettings() {
   if (modeRaw === undefined) {
     console.log('\nChọn chế độ chạy:');
     console.log('  1) Quét 1 lần rồi dừng');
-    console.log('  2) Quét lặp lại mỗi 10 phút (mỗi lần đọc lại nội dung mới nhất từ file CA)');
+    console.log('  2) Quét lặp lại (tự chọn số phút mỗi vòng, mỗi lần đọc lại nội dung mới nhất từ file CA)');
     modeRaw = await ask('Nhập lựa chọn', 1);
+  }
+
+  const repeat = String(modeRaw).trim() === '2';
+
+  let intervalRaw;
+  if (repeat) {
+    intervalRaw = args.interval;
+    if (intervalRaw === undefined) {
+      intervalRaw = await ask('Quét lặp lại mỗi bao nhiêu PHÚT', 10);
+    }
   }
 
   rl.close();
@@ -257,10 +326,19 @@ async function promptForSettings() {
   return {
     minLiq: num(minLiqRaw, 0),
     concurrency: Math.max(1, parseInt(concurrencyRaw, 10) || 10),
-    repeat: String(modeRaw).trim() === '2',
+    repeat,
+    intervalMin: Math.max(1, num(intervalRaw, 10)),
   };
 }
 
+const ADDR_RE = /^0x[a-f0-9]{40}$/;
+
+// Mỗi dòng có thể là:
+//   0xTOKEN                          (file cũ, chỉ có token)
+//   0xTOKEN,0xCURVE,0xPAIRTOKEN      (file mới do notifier.mjs ghi — xem appendCa)
+// pairToken có thể để trống (native ETH) -> vẫn giữ nguyên chuỗi rỗng.
+// Trả về mảng object { token, curve, pairToken } — curve/pairToken = null nếu
+// không có, để nơi gọi tự biết có thể đọc on-chain trực tiếp hay không.
 function loadCaList(filePath) {
   let raw;
   try {
@@ -272,12 +350,18 @@ function loadCaList(filePath) {
   const seen = new Set();
   const list = [];
   for (const line of raw.split('\n')) {
-    const ca = line.trim().toLowerCase();
-    if (!ca || ca.startsWith('#')) continue;
-    if (!/^0x[a-f0-9]{40}$/.test(ca)) continue; // bỏ qua dòng không phải địa chỉ hợp lệ
-    if (seen.has(ca)) continue;
-    seen.add(ca);
-    list.push(ca);
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const parts = trimmed.split(',').map((s) => s.trim().toLowerCase());
+    const token = parts[0];
+    if (!ADDR_RE.test(token)) continue; // bỏ qua dòng không phải địa chỉ hợp lệ
+    if (seen.has(token)) continue;
+    seen.add(token);
+
+    const curve = parts[1] && ADDR_RE.test(parts[1]) ? parts[1] : null;
+    const pairToken = curve && parts[2] ? parts[2] : null;
+    list.push({ token, curve, pairToken });
   }
   return list;
 }
@@ -298,14 +382,6 @@ async function runWithConcurrency(items, limit, worker) {
   await Promise.all(runners);
   return results;
 }
-
-const INTERVAL_MS = 10 * 60 * 1000; // 10 phút
-
-// Ghi nhớ CA đã báo Telegram trong phiên chạy này, để không bắn lại tin
-// trùng cho cùng 1 token ở những vòng quét lặp tiếp theo (--mode 2). Bộ nhớ
-// này chỉ tồn tại trong phiên chạy hiện tại — khởi động lại script sẽ báo
-// lại từ đầu.
-const notifiedTokens = new Set();
 
 function buildLiqTelegramMessage(r) {
   const sym = r.sym || '?';
@@ -342,16 +418,37 @@ async function runScanOnce(MIN_LIQ_USD, CONCURRENCY) {
 
   const t0 = Date.now();
   let done = 0;
-  const results = await runWithConcurrency(caList, CONCURRENCY, async (token) => {
+  const results = await runWithConcurrency(caList, CONCURRENCY, async ({ token, curve, pairToken }) => {
     let info = null;
-    try {
-      info = USE_VERIFY ? await fetchLiqVerified(token, TRIES) : await fetchLiq(token, TRIES);
-    } catch {}
 
-    // Chỉ tốn thêm request RPC tra % dev hold cho token ĐÃ thấy có liquidity
-    // (info != null) — token chưa index thì bỏ qua để đỡ tốn RPC vô ích.
+    // Ưu tiên đọc thẳng số dư ví Curve on-chain (real-time, KHÔNG có cache) —
+    // chỉ khả thi với các dòng mới do notifier.mjs ghi kèm curve/pairToken.
+    // Đây là fix cho đúng bug đã gặp: GeckoTerminal/DexScreener index có độ
+    // trễ, có thể vẫn trả về liquidity CŨ (từ trước lúc rug) trong nhiều
+    // phút sau khi ví curve đã thực sự về gần $0 trên GMGN.
+    // getCurveLiqUsd trả về null nếu: không có curve, token graduate sang
+    // Uniswap v4 rồi (không tự nói lên được), hoặc quote asset là cổ phiếu
+    // tokenized chưa quy đổi được USD ở đây -> những trường hợp đó fallback
+    // xuống API ngoài như cũ.
+    if (curve) {
+      try {
+        const onchain = await getCurveLiqUsd(curve, pairToken);
+        if (onchain) info = { source: onchain.source, liq: onchain.liq, mc: null, name: '', sym: '' };
+      } catch {}
+    }
+
+    if (!info) {
+      try {
+        info = USE_VERIFY ? await fetchLiqVerified(token, TRIES) : await fetchLiq(token, TRIES);
+      } catch {}
+    }
+
+    // Chỉ tốn thêm request RPC/Blockscout tra % dev hold cho token THẬT SỰ
+    // còn thanh khoản (liq > 0) — bỏ qua token đã xác nhận về $0 (dù qua
+    // on-chain hay API) để đỡ tốn request vô ích cho hàng loạt token rác
+    // trong ca-rug.txt.
     let devPct = null;
-    if (info) {
+    if (info && info.liq > 0) {
       try {
         devPct = await fetchDevHoldPct(token);
       } catch {}
@@ -393,24 +490,50 @@ async function runScanOnce(MIN_LIQ_USD, CONCURRENCY) {
     console.log(`${r.token}  ${liqStr.padEnd(14)} ${mcStr.padEnd(14)} ${(r.sym || '?').padEnd(9)} ${(r.source || 'chưa index').padEnd(12)} ${devPctStr.padEnd(9)} ${r.twitter || ''}`);
     console.log(`  GMGN: https://gmgn.ai/robinhood/token/${r.token}`);
 
-    // Báo Telegram cho token vừa phát hiện có thanh khoản trở lại (chỉ báo
-    // 1 lần/token trong suốt phiên chạy, xem notifiedTokens ở trên).
-    if (telegram.telegramEnabled && !notifiedTokens.has(r.token)) {
-      notifiedTokens.add(r.token);
+    // Báo Telegram cho MỌI token khớp điều kiện lọc ở MỌI vòng quét (kể cả
+    // đã báo ở vòng trước, miễn vẫn còn đủ điều kiện) — không dedup theo
+    // phiên chạy nữa, theo yêu cầu.
+    if (telegram.telegramEnabled) {
       telegram.sendTelegramMessage(buildLiqTelegramMessage(r)).catch(() => {});
     }
   }
 
   const withLiq = results.filter((r) => r.liq != null && r.liq > 0).length;
   console.log(`\n[*] Xong trong ${elapsedSec}s. ${filtered.length}/${results.length} token khớp điều kiện lọc (tổng ${withLiq} token có thanh khoản > 0).`);
+
+  // Cập nhật streak "liên tiếp không có thanh khoản" cho từng token, xoá
+  // khỏi INPUT_FILE những token đã đạt ngưỡng MAX_ZERO_STREAK.
+  const zeroStreak = loadZeroStreak();
+  const toRemove = new Set();
+  for (const r of results) {
+    const hasLiq = r.liq != null && r.liq > 0;
+    if (hasLiq) {
+      zeroStreak.delete(r.token);
+      continue;
+    }
+    const count = (zeroStreak.get(r.token) || 0) + 1;
+    if (count >= MAX_ZERO_STREAK) {
+      toRemove.add(r.token);
+      zeroStreak.delete(r.token); // không cần theo dõi nữa vì sắp xoá khỏi file
+    } else {
+      zeroStreak.set(r.token, count);
+    }
+  }
+  saveZeroStreak(zeroStreak);
+
+  if (toRemove.size > 0) {
+    removeFromCaFile(INPUT_FILE, caList, toRemove);
+    console.log(`[*] Đã xoá ${toRemove.size} CA khỏi ${INPUT_FILE} (liquidity = 0 sau ${MAX_ZERO_STREAK} lần quét liên tiếp).`);
+  }
 }
 
 async function main() {
-  const { minLiq: MIN_LIQ_USD, concurrency: CONCURRENCY, repeat } = await promptForSettings();
+  const { minLiq: MIN_LIQ_USD, concurrency: CONCURRENCY, repeat, intervalMin } = await promptForSettings();
+  const INTERVAL_MS = intervalMin * 60 * 1000;
 
   const rpcOk = await initRpc();
   if (!rpcOk) {
-    console.log('[!] Không kết nối được RPC nào (kiểm tra file rpc.txt) - cột "Dev hold" sẽ hiển thị n/a, phần liquidity vẫn chạy bình thường.\n');
+    console.log(`[!] Không kết nối được RPC nào (kiểm tra file ${RPC_FILE_NAME}) - cột "Dev hold" sẽ hiển thị n/a, phần liquidity vẫn chạy bình thường.\n`);
   }
 
   await telegram.verifyTelegramConnection();
@@ -421,7 +544,7 @@ async function main() {
     return;
   }
 
-  console.log(`\n[*] Chế độ: quét lặp lại mỗi ${INTERVAL_MS / 60000} phút. Nhấn Ctrl+C để dừng.\n`);
+  console.log(`\n[*] Chế độ: quét lặp lại mỗi ${intervalMin} phút. Nhấn Ctrl+C để dừng.\n`);
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const startedAt = new Date().toLocaleString('vi-VN');
